@@ -1,0 +1,4 @@
+event,market,selection,bookmaker,odds,estimated_probability
+Time A x Time B,Resultado Final,Time A,Casa Exemplo,2.10,0.54
+Time C x Time D,Mais/Menos,Mais de 2.5,Casa Exemplo,1.85,0.50
+Time E x Time F,Ambas Marcam,Sim,Casa Exemplo,1.95,0.48
