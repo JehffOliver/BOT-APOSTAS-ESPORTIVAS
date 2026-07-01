@@ -23,6 +23,7 @@ class OddsApiSettings:
     bookmakers: str | None
     min_edge: Decimal
     min_ev: Decimal
+    min_bookmakers: int
 
 
 def decimal_env(name: str, default: str) -> Decimal:
@@ -31,6 +32,14 @@ def decimal_env(name: str, default: str) -> Decimal:
         return Decimal(value)
     except InvalidOperation:
         return Decimal(default)
+
+
+def int_env(name: str, default: str) -> int:
+    value = os.getenv(name, default).strip()
+    try:
+        return int(value)
+    except ValueError:
+        return int(default)
 
 
 def load_odds_settings() -> OddsApiSettings:
@@ -44,6 +53,7 @@ def load_odds_settings() -> OddsApiSettings:
         bookmakers=os.getenv('ODDS_BOOKMAKERS') or None,
         min_edge=decimal_env('MIN_EDGE', '0.03'),
         min_ev=decimal_env('MIN_EV', '0.01'),
+        min_bookmakers=int_env('MIN_BOOKMAKERS', '4'),
     )
 
 
@@ -92,16 +102,30 @@ def list_sports(api_key: str) -> list[dict[str, Any]]:
     return response.json()
 
 
+def confidence_label(bookmakers_count: int, edge: Decimal, ev: Decimal) -> str:
+    if bookmakers_count < 3:
+        return 'baixa'
+    if bookmakers_count >= 6 and edge >= Decimal('0.05') and ev >= Decimal('0.03'):
+        return 'alta'
+    if bookmakers_count >= 4 and edge >= Decimal('0.03') and ev >= Decimal('0.01'):
+        return 'media'
+    return 'baixa'
+
+
 def analyse_events(events: list[dict[str, Any]], settings: OddsApiSettings) -> list[dict[str, Any]]:
     opportunities: list[dict[str, Any]] = []
 
     for event in events:
         event_name = f"{event.get('home_team', '')} x {event.get('away_team', '')}".strip(' x')
-        outcome_probability_samples: dict[str, list[Decimal]] = defaultdict(list)
+        # outcome -> list of samples. Each sample has the bookmaker and that bookmaker's no-vig probability.
+        probability_samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
         offers: list[dict[str, Any]] = []
 
         for bookmaker in event.get('bookmakers', []):
             bookmaker_title = bookmaker.get('title', bookmaker.get('key', ''))
+            bookmaker_key = bookmaker.get('key', bookmaker_title)
+            last_update = bookmaker.get('last_update', '')
+
             for market in bookmaker.get('markets', []):
                 market_key = market.get('key', '')
                 outcomes = market.get('outcomes', [])
@@ -120,10 +144,17 @@ def analyse_events(events: list[dict[str, Any]], settings: OddsApiSettings) -> l
                 if raw_sum <= 0:
                     continue
 
+                margin = raw_sum - Decimal('1')
+
                 for outcome_name, price in parsed_outcomes:
                     raw_prob = implied_probability(price)
                     no_vig_prob = raw_prob / raw_sum
-                    outcome_probability_samples[outcome_name].append(no_vig_prob)
+                    probability_samples[outcome_name].append({
+                        'bookmaker_key': bookmaker_key,
+                        'bookmaker_title': bookmaker_title,
+                        'probability': no_vig_prob,
+                        'margin': margin,
+                    })
                     offers.append({
                         'event': event_name,
                         'commence_time': event.get('commence_time', ''),
@@ -132,35 +163,85 @@ def analyse_events(events: list[dict[str, Any]], settings: OddsApiSettings) -> l
                         'market': market_key,
                         'selection': outcome_name,
                         'bookmaker': bookmaker_title,
+                        'bookmaker_key': bookmaker_key,
+                        'bookmaker_last_update': last_update,
                         'odds': price,
                         'bookmaker_probability': raw_prob,
+                        'bookmaker_market_margin': margin,
                     })
 
-        consensus_probabilities: dict[str, Decimal] = {}
-        for outcome_name, samples in outcome_probability_samples.items():
-            if not samples:
-                continue
-            consensus_probabilities[outcome_name] = sum(samples, Decimal('0')) / Decimal(len(samples))
-
         for offer in offers:
-            estimated_probability = consensus_probabilities.get(offer['selection'])
-            if estimated_probability is None:
+            samples = probability_samples.get(offer['selection'], [])
+            samples_excluding_current = [
+                sample for sample in samples
+                if sample['bookmaker_key'] != offer['bookmaker_key']
+            ]
+            used_samples = samples_excluding_current or samples
+            if not used_samples:
                 continue
+
+            estimated_probability = sum(
+                (sample['probability'] for sample in used_samples),
+                Decimal('0'),
+            ) / Decimal(len(used_samples))
+
             odds = offer['odds']
             edge = estimated_probability - offer['bookmaker_probability']
             ev = expected_value(odds, estimated_probability)
-            approved = edge >= settings.min_edge and ev >= settings.min_ev
+            bookmakers_count = len(used_samples)
+            approved = (
+                edge >= settings.min_edge
+                and ev >= settings.min_ev
+                and bookmakers_count >= settings.min_bookmakers
+            )
+            confidence = confidence_label(bookmakers_count, edge, ev)
+
             opportunities.append({
                 **offer,
                 'estimated_probability': estimated_probability,
                 'edge': edge,
                 'expected_value': ev,
                 'approved': approved,
-                'bookmakers_count': len(outcome_probability_samples.get(offer['selection'], [])),
+                'bookmakers_count': bookmakers_count,
+                'confidence': confidence,
+                'method': 'consenso_sem_a_casa_atual' if samples_excluding_current else 'consenso_com_a_casa_atual',
             })
 
-    opportunities.sort(key=lambda item: (item['approved'], item['expected_value'], item['edge']), reverse=True)
+    opportunities.sort(key=lambda item: (item['approved'], item['expected_value'], item['edge'], item['bookmakers_count']), reverse=True)
     return opportunities
+
+
+def filter_opportunities(
+    opportunities: list[dict[str, Any]],
+    only_alerts: bool = False,
+    min_edge: Decimal | None = None,
+    min_ev: Decimal | None = None,
+    min_bookmakers: int | None = None,
+    min_odds: Decimal | None = None,
+    max_odds: Decimal | None = None,
+    bookmaker: str | None = None,
+    selection_contains: str | None = None,
+) -> list[dict[str, Any]]:
+    filtered = opportunities
+    if only_alerts:
+        filtered = [item for item in filtered if item['approved']]
+    if min_edge is not None:
+        filtered = [item for item in filtered if item['edge'] >= min_edge]
+    if min_ev is not None:
+        filtered = [item for item in filtered if item['expected_value'] >= min_ev]
+    if min_bookmakers is not None:
+        filtered = [item for item in filtered if item['bookmakers_count'] >= min_bookmakers]
+    if min_odds is not None:
+        filtered = [item for item in filtered if item['odds'] >= min_odds]
+    if max_odds is not None:
+        filtered = [item for item in filtered if item['odds'] <= max_odds]
+    if bookmaker:
+        needle = bookmaker.lower().strip()
+        filtered = [item for item in filtered if needle in item['bookmaker'].lower()]
+    if selection_contains:
+        needle = selection_contains.lower().strip()
+        filtered = [item for item in filtered if needle in item['selection'].lower() or needle in item['event'].lower()]
+    return filtered
 
 
 def get_live_analysis(settings: OddsApiSettings) -> tuple[list[dict[str, Any]], dict[str, str]]:
