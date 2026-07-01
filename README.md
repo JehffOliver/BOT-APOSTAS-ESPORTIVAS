@@ -2,17 +2,17 @@
 
 Scanner de odds + alerta para estudar apostas esportivas com controle de risco.
 
-> Objetivo: encontrar possiveis apostas de valor comparando a odd da casa com uma probabilidade estimada por modelo/analise. Este projeto NAO faz apostas automaticamente.
+> Objetivo: buscar odds via API, calcular uma chance estimada pelo consenso do mercado e destacar possiveis apostas de valor. Este projeto NAO faz apostas automaticamente.
 
-## O que o bot faz nesta primeira versao
+## O que o bot faz nesta versao
 
-- Le uma lista de odds em CSV
-- Calcula probabilidade implicita da odd
-- Compara com uma probabilidade estimada
+- Busca jogos e odds pela The Odds API
+- Mostra jogos disponiveis na interface web
+- Calcula probabilidade implicita de cada odd
+- Calcula uma chance estimada pelo consenso das casas, removendo margem de cada mercado
 - Calcula edge e valor esperado
-- Mostra alertas quando uma entrada passa nos filtros
-- Disponibiliza uma interface web local
-- Permite enviar um novo CSV pela tela web
+- Destaca alertas quando uma entrada passa nos filtros
+- Mostra creditos restantes/uso da API quando a API retorna esses headers
 
 ## O que o bot nao faz
 
@@ -21,20 +21,36 @@ Scanner de odds + alerta para estudar apostas esportivas com controle de risco.
 - Nao garante lucro
 - Nao usa martingale ou recuperacao agressiva
 
-## Como executar no Windows
+## Configurar chave da API
 
-Abra o PowerShell na pasta do projeto e rode:
+Crie uma conta/chave em:
 
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+```text
+https://the-odds-api.com/
 ```
 
-Depois inicie a aplicacao:
+Depois crie um arquivo chamado `.env` na raiz do projeto. Voce pode copiar o exemplo:
 
-```powershell
-.\scripts\start.ps1
+```cmd
+copy .env.example .env
+```
+
+Edite o `.env` e preencha:
+
+```env
+THE_ODDS_API_KEY=sua_chave_aqui
+ODDS_SPORT=soccer_brazil_campeonato
+ODDS_REGIONS=eu
+ODDS_MARKETS=h2h
+```
+
+## Como executar no Windows
+
+Abra o PowerShell ou CMD na pasta do projeto e rode:
+
+```cmd
+scripts\install.cmd
+scripts\start.cmd
 ```
 
 Acesse no navegador:
@@ -45,35 +61,25 @@ http://127.0.0.1:8000
 
 ## Scripts disponiveis
 
-```powershell
-.\scripts\start.ps1    # inicia a aplicacao web
-.\scripts\status.ps1   # verifica se esta online ou offline
-.\scripts\stop.ps1     # para a aplicacao pela porta 8000
-.\scripts\restart.ps1  # para e inicia novamente
+```cmd
+scripts\install.cmd  # cria/atualiza o .venv e instala dependencias
+scripts\start.cmd    # inicia a aplicacao web
+scripts\status.cmd   # verifica se esta online ou offline
+scripts\stop.cmd     # para a aplicacao pela porta 8000
+scripts\restart.cmd  # para e inicia novamente
 ```
 
-Observacao: o script start.ps1 fica com o processo aberto na propria janela do PowerShell. Para parar, pressione Ctrl+C ou abra outro PowerShell na pasta do projeto e rode .\scripts\stop.ps1.
+## Como a chance estimada funciona
 
-## Como executar pelo Python diretamente
+Para cada casa e mercado, o sistema transforma odds em probabilidades implicitas:
 
-```powershell
-.venv\Scripts\activate
-python -m uvicorn src.web:app --host 127.0.0.1 --port 8000
+```text
+probabilidade implicita = 1 / odd
 ```
 
-## Formato do CSV
+Como as casas incluem margem, a soma das probabilidades geralmente passa de 100%. O sistema normaliza as probabilidades dentro de cada casa/mercado para tentar remover essa margem. Depois calcula uma media entre as casas disponiveis.
 
-O arquivo precisa ter estas colunas:
-
-```csv
-event,market,selection,bookmaker,odds,estimated_probability
-Time A x Time B,Resultado Final,Time A,Casa Exemplo,2.10,0.54
-```
-
-Onde:
-
-- odds: odd decimal da casa, exemplo 2.10
-- estimated_probability: sua probabilidade estimada em decimal, exemplo 0.54 para 54%
+Essa media vira a coluna `Chance estimada`. Ela nao e previsao garantida; e uma leitura do consenso do mercado.
 
 ## Conceito principal
 
@@ -81,46 +87,40 @@ Exemplo:
 
 - Odd: 2.10
 - Probabilidade implicita: 1 / 2.10 = 47.62%
-- Sua probabilidade estimada: 54.00%
-- Edge: 54.00% - 47.62% = 6.38 pontos percentuais
+- Chance estimada pelo consenso: 52.00%
+- Edge: 52.00% - 47.62% = 4.38 pontos percentuais
 
-Se a sua estimativa estiver correta, pode existir valor. Se a estimativa estiver errada, a aposta pode ser ruim mesmo parecendo boa.
+Se a chance estimada estiver correta, pode existir valor. Se a estimativa estiver errada, a aposta pode ser ruim mesmo parecendo boa.
+
+## Filtros importantes
+
+No `.env`:
+
+```env
+MIN_EDGE=0.03
+MIN_EV=0.01
+```
+
+- `MIN_EDGE=0.03`: so alerta quando a chance estimada for pelo menos 3 pontos percentuais maior que a probabilidade implicita da odd.
+- `MIN_EV=0.01`: so alerta quando o valor esperado for positivo acima do filtro.
 
 ## Estrutura
 
 ```text
 src/
-  main.py      Execucao simples em terminal
-  scanner.py   Calcula probabilidade implicita, edge e EV
-  web.py       Interface web local
-
-data/
-  sample_odds.csv
+  main.py       Execucao simples em terminal antiga
+  scanner.py    Calculos simples antigos
+  odds_api.py   Integracao com The Odds API e analise de mercado
+  web.py        Interface web via API
 
 scripts/
-  start.ps1
-  stop.ps1
-  restart.ps1
-  status.ps1
+  install.cmd
+  start.cmd
+  stop.cmd
+  restart.cmd
+  status.cmd
 ```
-
-## Primeiro marco do projeto
-
-1. Rodar com CSV de exemplo.
-2. Trocar o CSV por uma fonte real de odds permitida.
-3. Criar um modelo simples de probabilidade.
-4. Comparar desempenho em historico.
-5. So depois pensar em alerta real.
-
-## Regra de banca sugerida para testes pequenos
-
-- Banca inicial: R$ 10,00
-- Entrada maxima: R$ 0,10 ou R$ 0,20
-- Sem martingale
-- Stop loss diario: R$ 2,00
-- Stop win diario: R$ 2,00
-- Aposta manual, sempre
 
 ## Aviso
 
-Apostas envolvem risco financeiro. Este projeto e apenas uma ferramenta de estudo/alerta e pode indicar oportunidades falsas se as probabilidades estimadas forem ruins.
+Apostas envolvem risco financeiro. Este projeto e apenas uma ferramenta de estudo/alerta e pode indicar oportunidades falsas se as probabilidades estimadas forem ruins. Aposte manualmente, com valor baixo, e nunca use martingale.
